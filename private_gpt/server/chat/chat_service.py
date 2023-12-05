@@ -1,13 +1,15 @@
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
 
 from injector import inject, singleton
 from llama_index import ServiceContext, StorageContext, VectorStoreIndex
-from llama_index.chat_engine import ContextChatEngine
+from llama_index.chat_engine import ContextChatEngine, SimpleChatEngine
+from llama_index.chat_engine.types import (
+    BaseChatEngine,
+)
 from llama_index.indices.postprocessor import MetadataReplacementPostProcessor
-from llama_index.llm_predictor.utils import stream_chat_response_to_tokens
-from llama_index.llms import ChatMessage
+from llama_index.llms import ChatMessage, MessageRole
 from llama_index.types import TokenGen
+from pydantic import BaseModel
 
 from private_gpt.components.embedding.embedding_component import EmbeddingComponent
 from private_gpt.components.llm.llm_component import LLMComponent
@@ -16,12 +18,51 @@ from private_gpt.components.vector_store.vector_store_component import (
     VectorStoreComponent,
 )
 from private_gpt.open_ai.extensions.context_filter import ContextFilter
+from private_gpt.server.chunks.chunks_service import Chunk
 
-if TYPE_CHECKING:
-    from llama_index.chat_engine.types import (
-        AgentChatResponse,
-        StreamingAgentChatResponse,
-    )
+
+class Completion(BaseModel):
+    response: str
+    sources: list[Chunk] | None = None
+
+
+class CompletionGen(BaseModel):
+    response: TokenGen
+    sources: list[Chunk] | None = None
+
+
+@dataclass
+class ChatEngineInput:
+    system_message: ChatMessage | None = None
+    last_message: ChatMessage | None = None
+    chat_history: list[ChatMessage] | None = None
+
+    @classmethod
+    def from_messages(cls, messages: list[ChatMessage]) -> "ChatEngineInput":
+        # Detect if there is a system message, extract the last message and chat history
+        system_message = (
+            messages[0]
+            if len(messages) > 0 and messages[0].role == MessageRole.SYSTEM
+            else None
+        )
+        last_message = (
+            messages[-1]
+            if len(messages) > 0 and messages[-1].role == MessageRole.USER
+            else None
+        )
+        # Remove from messages list the system message and last message,
+        # if they exist. The rest is the chat history.
+        if system_message:
+            messages.pop(0)
+        if last_message:
+            messages.pop(-1)
+        chat_history = messages if len(messages) > 0 else None
+
+        return cls(
+            system_message=system_message,
+            last_message=last_message,
+            chat_history=chat_history,
+        )
 
 
 @singleton
@@ -51,66 +92,96 @@ class ChatService:
             show_progress=True,
         )
 
-    def _chat_with_contex(
+    def _chat_engine(
         self,
-        message: str,
+        system_prompt: str | None = None,
+        use_context: bool = False,
         context_filter: ContextFilter | None = None,
-        chat_history: Sequence[ChatMessage] | None = None,
-        streaming: bool = False,
-    ) -> Any:
-        vector_index_retriever = self.vector_store_component.get_retriever(
-            index=self.index, context_filter=context_filter
-        )
-        chat_engine = ContextChatEngine.from_defaults(
-            retriever=vector_index_retriever,
-            service_context=self.service_context,
-            node_postprocessors=[
-                MetadataReplacementPostProcessor(target_metadata_key="window"),
-            ],
-        )
-        if streaming:
-            result = chat_engine.stream_chat(message, chat_history)
+    ) -> BaseChatEngine:
+        if use_context:
+            vector_index_retriever = self.vector_store_component.get_retriever(
+                index=self.index, context_filter=context_filter
+            )
+            return ContextChatEngine.from_defaults(
+                system_prompt=system_prompt,
+                retriever=vector_index_retriever,
+                service_context=self.service_context,
+                node_postprocessors=[
+                    MetadataReplacementPostProcessor(target_metadata_key="window"),
+                ],
+            )
         else:
-            result = chat_engine.chat(message, chat_history)
-        return result
+            return SimpleChatEngine.from_defaults(
+                system_prompt=system_prompt,
+                service_context=self.service_context,
+            )
 
     def stream_chat(
         self,
         messages: list[ChatMessage],
         use_context: bool = False,
         context_filter: ContextFilter | None = None,
-    ) -> TokenGen:
-        if use_context:
-            last_message = messages[-1].content
-            response: StreamingAgentChatResponse = self._chat_with_contex(
-                message=last_message if last_message is not None else "",
-                chat_history=messages[:-1],
-                context_filter=context_filter,
-                streaming=True,
-            )
-            response_gen = response.response_gen
-        else:
-            stream = self.llm_service.llm.stream_chat(messages)
-            response_gen = stream_chat_response_to_tokens(stream)
-        return response_gen
+    ) -> CompletionGen:
+        chat_engine_input = ChatEngineInput.from_messages(messages)
+        last_message = (
+            chat_engine_input.last_message.content
+            if chat_engine_input.last_message
+            else None
+        )
+        system_prompt = (
+            chat_engine_input.system_message.content
+            if chat_engine_input.system_message
+            else None
+        )
+        chat_history = (
+            chat_engine_input.chat_history if chat_engine_input.chat_history else None
+        )
+
+        chat_engine = self._chat_engine(
+            system_prompt=system_prompt,
+            use_context=use_context,
+            context_filter=context_filter,
+        )
+        streaming_response = chat_engine.stream_chat(
+            message=last_message if last_message is not None else "",
+            chat_history=chat_history,
+        )
+        sources = [Chunk.from_node(node) for node in streaming_response.source_nodes]
+        completion_gen = CompletionGen(
+            response=streaming_response.response_gen, sources=sources
+        )
+        return completion_gen
 
     def chat(
         self,
         messages: list[ChatMessage],
         use_context: bool = False,
         context_filter: ContextFilter | None = None,
-    ) -> str:
-        if use_context:
-            last_message = messages[-1].content
-            wrapped_response: AgentChatResponse = self._chat_with_contex(
-                message=last_message if last_message is not None else "",
-                chat_history=messages[:-1],
-                context_filter=context_filter,
-                streaming=False,
-            )
-            response = wrapped_response.response
-        else:
-            chat_response = self.llm_service.llm.chat(messages)
-            response_content = chat_response.message.content
-            response = response_content if response_content is not None else ""
-        return response
+    ) -> Completion:
+        chat_engine_input = ChatEngineInput.from_messages(messages)
+        last_message = (
+            chat_engine_input.last_message.content
+            if chat_engine_input.last_message
+            else None
+        )
+        system_prompt = (
+            chat_engine_input.system_message.content
+            if chat_engine_input.system_message
+            else None
+        )
+        chat_history = (
+            chat_engine_input.chat_history if chat_engine_input.chat_history else None
+        )
+
+        chat_engine = self._chat_engine(
+            system_prompt=system_prompt,
+            use_context=use_context,
+            context_filter=context_filter,
+        )
+        wrapped_response = chat_engine.chat(
+            message=last_message if last_message is not None else "",
+            chat_history=chat_history,
+        )
+        sources = [Chunk.from_node(node) for node in wrapped_response.source_nodes]
+        completion = Completion(response=wrapped_response.response, sources=sources)
+        return completion

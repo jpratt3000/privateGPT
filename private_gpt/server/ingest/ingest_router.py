@@ -1,20 +1,23 @@
-from fastapi import APIRouter, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+from typing import Literal
 
-from private_gpt.di import root_injector
-from private_gpt.server.ingest.ingest_service import IngestedDoc, IngestService
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 
-ingest_router = APIRouter(prefix="/v1")
+from private_gpt.server.ingest.ingest_service import IngestService
+from private_gpt.server.ingest.model import IngestedDoc
+from private_gpt.server.utils.auth import authenticated
+
+ingest_router = APIRouter(prefix="/v1", dependencies=[Depends(authenticated)])
 
 
 class IngestResponse(BaseModel):
-    object: str = Field(enum=["list"])
-    model: str = Field(enum=["private-gpt"])
+    object: Literal["list"]
+    model: Literal["private-gpt"]
     data: list[IngestedDoc]
 
 
 @ingest_router.post("/ingest", tags=["Ingestion"])
-def ingest(file: UploadFile) -> IngestResponse:
+def ingest(request: Request, file: UploadFile) -> IngestResponse:
     """Ingests and processes a file, storing its chunks to be used as context.
 
     The context obtained from files is later used in
@@ -30,31 +33,31 @@ def ingest(file: UploadFile) -> IngestResponse:
     can be used to filter the context used to create responses in
     `/chat/completions`, `/completions`, and `/chunks` APIs.
     """
-    service = root_injector.get(IngestService)
+    service = request.state.injector.get(IngestService)
     if file.filename is None:
         raise HTTPException(400, "No file name provided")
-    ingested_documents = service.ingest(file.filename, file.file.read())
+    ingested_documents = service.ingest_bin_data(file.filename, file.file)
     return IngestResponse(object="list", model="private-gpt", data=ingested_documents)
 
 
 @ingest_router.get("/ingest/list", tags=["Ingestion"])
-def list_ingested() -> IngestResponse:
+def list_ingested(request: Request) -> IngestResponse:
     """Lists already ingested Documents including their Document ID and metadata.
 
     Those IDs can be used to filter the context used to create responses
     in `/chat/completions`, `/completions`, and `/chunks` APIs.
     """
-    service = root_injector.get(IngestService)
+    service = request.state.injector.get(IngestService)
     ingested_documents = service.list_ingested()
     return IngestResponse(object="list", model="private-gpt", data=ingested_documents)
 
 
 @ingest_router.delete("/ingest/{doc_id}", tags=["Ingestion"])
-def delete_ingested(doc_id: str) -> None:
+def delete_ingested(request: Request, doc_id: str) -> None:
     """Delete the specified ingested Document.
 
     The `doc_id` can be obtained from the `GET /ingest/list` endpoint.
     The document will be effectively deleted from your storage context.
     """
-    service = root_injector.get(IngestService)
+    service = request.state.injector.get(IngestService)
     service.delete(doc_id)

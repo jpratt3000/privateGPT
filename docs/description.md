@@ -174,6 +174,10 @@ is used.
 > It's highly encouraged that you fully read llama-cpp and llama-cpp-python documentation relevant to your platform.
 > Running into installation issues is very likely, and you'll need to troubleshoot them yourself.
 
+#### Customizing low level parameters
+
+Currently not all the parameters of llama-cpp and llama-cpp-python are available at PrivateGPT's `settings.yaml` file. In case you need to customize parameters such as the number of layers loaded into the GPU, you might change these at the `llm_component.py` file under the `private_gpt/components/llm/llm_component.py`. If you are getting an out of memory error, you might also try a smaller model or stick to the proposed recommended models, instead of custom tuning the parameters.
+
 #### OSX GPU support
 
 You will need to build [llama.cpp](https://github.com/ggerganov/llama.cpp) with
@@ -243,6 +247,35 @@ time you start the server `BLAS = 1`.
 llama_new_context_with_model: total VRAM used: 4857.93 MB (model: 4095.05 MB, context: 762.87 MB)
 AVX = 1 | AVX2 = 1 | AVX512 = 0 | AVX512_VBMI = 0 | AVX512_VNNI = 0 | FMA = 1 | NEON = 0 | ARM_FMA = 0 | F16C = 1 | FP16_VA = 0 | WASM_SIMD = 0 | BLAS = 1 | SSE3 = 1 | SSSE3 = 0 | VSX = 0 | 
 ```
+
+#### Vectorstores
+PrivateGPT supports [Chroma](https://www.trychroma.com/), [Qdrant](https://qdrant.tech/) as vectorstore providers. Chroma being the default.
+
+To enable Qdrant, set the `vectorstore.database` property in the `settings.yaml` file to `qdrant` and install the `qdrant` extra.
+
+```bash
+poetry install --extras qdrant
+```
+
+By default Qdrant tries to connect to an instance at `http://localhost:3000`.
+
+Qdrant settings can be configured by setting values to the `qdrant` property in the `settings.yaml` file.
+
+The available configuration options are:
+| Field        | Description |
+|--------------|-------------|
+| location     | If `:memory:` - use in-memory Qdrant instance.<br>If `str` - use it as a `url` parameter.|
+| url          | Either host or str of 'Optional[scheme], host, Optional[port], Optional[prefix]'.<br> Eg. `http://localhost:6333` |
+| port         | Port of the REST API interface. Default: `6333` |
+| grpc_port    | Port of the gRPC interface. Default: `6334` |
+| prefer_grpc  | If `true` - use gRPC interface whenever possible in custom methods. |
+| https        | If `true` - use HTTPS(SSL) protocol.|
+| api_key      | API key for authentication in Qdrant Cloud.|
+| prefix       | If set, add `prefix` to the REST URL path.<br>Example: `service/v1` will result in `http://localhost:6333/service/v1/{qdrant-endpoint}` for REST API.|
+| timeout      | Timeout for REST and gRPC API requests.<br>Default: 5.0 seconds for REST and unlimited for gRPC |
+| host         | Host name of Qdrant service. If url and host are not set, defaults to 'localhost'.|
+| path         | Persistence path for QdrantLocal. Eg. `local_data/private_gpt/qdrant`|
+| force_disable_check_same_thread         | Force disable check_same_thread for QdrantLocal sqlite connection.|
 
 #### Known issues and Troubleshooting
 
@@ -429,6 +462,11 @@ or using the completions / chat API.
 
 When running in a local setup, you can remove all ingested documents by simply
 deleting all contents of `local_data` folder (except .gitignore).
+
+To simplify this process, you can use the command:
+```bash
+make wipe
+```
 
 ## API
 

@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from injector import inject, singleton
 from llama_index import ServiceContext, StorageContext, VectorStoreIndex
@@ -12,28 +12,44 @@ from private_gpt.components.vector_store.vector_store_component import (
     VectorStoreComponent,
 )
 from private_gpt.open_ai.extensions.context_filter import ContextFilter
-from private_gpt.server.ingest.ingest_service import IngestedDoc
+from private_gpt.server.ingest.model import IngestedDoc
 
 if TYPE_CHECKING:
     from llama_index.schema import RelatedNodeInfo
 
 
 class Chunk(BaseModel):
-    object: str = Field(enum=["context.chunk"])
+    object: Literal["context.chunk"]
     score: float = Field(examples=[0.023])
     document: IngestedDoc
     text: str = Field(examples=["Outbound sales increased 20%, driven by new leads."])
     previous_texts: list[str] | None = Field(
-        examples=[["SALES REPORT 2023", "Inbound didn't show major changes."]]
+        default=None,
+        examples=[["SALES REPORT 2023", "Inbound didn't show major changes."]],
     )
     next_texts: list[str] | None = Field(
+        default=None,
         examples=[
             [
                 "New leads came from Google Ads campaign.",
                 "The campaign was run by the Marketing Department",
             ]
-        ]
+        ],
     )
+
+    @classmethod
+    def from_node(cls: type["Chunk"], node: NodeWithScore) -> "Chunk":
+        doc_id = node.node.ref_doc_id if node.node.ref_doc_id is not None else "-"
+        return cls(
+            object="context.chunk",
+            score=node.score or 0.0,
+            document=IngestedDoc(
+                object="ingest.document",
+                doc_id=doc_id,
+                doc_metadata=node.metadata,
+            ),
+            text=node.get_content(),
+        )
 
 
 @singleton
@@ -98,22 +114,11 @@ class ChunksService:
 
         retrieved_nodes = []
         for node in nodes:
-            doc_id = node.node.ref_doc_id if node.node.ref_doc_id is not None else "-"
-            retrieved_nodes.append(
-                Chunk(
-                    object="context.chunk",
-                    score=node.score or 0.0,
-                    document=IngestedDoc(
-                        object="ingest.document",
-                        doc_id=doc_id,
-                        doc_metadata=node.metadata,
-                    ),
-                    text=node.get_content(),
-                    previous_texts=self._get_sibling_nodes_text(
-                        node, prev_next_chunks, False
-                    ),
-                    next_texts=self._get_sibling_nodes_text(node, prev_next_chunks),
-                )
+            chunk = Chunk.from_node(node)
+            chunk.previous_texts = self._get_sibling_nodes_text(
+                node, prev_next_chunks, False
             )
+            chunk.next_texts = self._get_sibling_nodes_text(node, prev_next_chunks)
+            retrieved_nodes.append(chunk)
 
         return retrieved_nodes

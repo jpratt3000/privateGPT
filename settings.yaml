@@ -1,3 +1,6 @@
+# The default configuration file.
+# More information about configuration can be found in the documentation: https://docs.privategpt.dev/
+# Syntax in `private_pgt/settings/settings.py`
 server:
   env_name: ${APP_ENV:prod}
   port: ${PORT:8001}
@@ -6,6 +9,12 @@ server:
     allow_origins: ["*"]
     allow_methods: ["*"]
     allow_headers: ["*"]
+  auth:
+    enabled: false
+    # python -c 'import base64; print("Basic " + base64.b64encode("secret:key".encode()).decode())'
+    # 'secret' is the username and 'key' is the password for basic auth by default
+    # If the auth is enabled, this value must be set in the "Authorization" header of the request.
+    secret: "Basic c2VjcmV0OmtleQ=="
 
 data:
   local_data_folder: local_data/private_gpt
@@ -15,9 +24,21 @@ ui:
   path: /
 
 llm:
-  mode: mock
+  mode: local
+
+embedding:
+  # Should be matching the value above in most cases
+  mode: local
+  ingest_mode: simple
+
+vectorstore:
+  database: qdrant
+
+qdrant:
+  path: local_data/private_gpt/qdrant
 
 local:
+  prompt_style: "llama2"
   llm_hf_repo_id: TheBloke/Mistral-7B-Instruct-v0.1-GGUF
   llm_hf_model_file: mistral-7b-instruct-v0.1.Q4_K_M.gguf
   embedding_hf_model_name: BAAI/bge-small-en-v1.5
